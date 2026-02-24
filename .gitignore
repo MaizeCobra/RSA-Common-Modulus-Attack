@@ -1,0 +1,13 @@
+# Agent files
+.agent/
+.agents/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Presentations
+*.pptx
+~$*.pptx
