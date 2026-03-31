@@ -8,6 +8,22 @@ __pycache__/
 *.pyo
 *.pyd
 
-# Presentations
+# Presentations & reports (binary — not committed)
 *.pptx
 ~$*.pptx
+*.docx
+~$*.docx
+*.tmp
+~WRL*.tmp
+
+# Node.js artifacts
+node_modules/
+package.json
+package-lock.json
+generate_report.js
+
+# Skill lock
+skills-lock.json
+
+# Unpacked docx working dirs
+unpacked_report/

@@ -127,6 +127,7 @@ class RSAApp(tk.Tk):
             ("⚔   Run Attack",        self._on_run_attack,        RED),
             ("🛡   Apply Prevention",  self._on_apply_prevention,  "#065f46"),
             ("📊  Show Graphs",        self._on_show_graphs,       "#1e3a5f"),
+            ("🔬  Show Comparison",    self._on_show_comparison,   "#4a1942"),
         ]
 
         tk.Label(parent, text="ACTIONS", bg=BG, fg=FG_GREY,
@@ -424,16 +425,131 @@ class RSAApp(tk.Tk):
                 "grey_tag"
             )
 
-        def _worker():
+        def _gather():
+            """Runs in background: collect all timing data."""
             try:
-                from graphs import show_all_graphs
+                from graphs import (
+                    _measure_attack_time, generate_shared_modulus_keypairs,
+                    show_all_graphs
+                )
+                from rsa_common_modulus import (
+                    reset_registry, generate_secure_keypair
+                )
+                import time as _time
+
                 def _sc(msg):
                     self._log_msg(f"  {msg}\n", "grey_tag")
-                show_all_graphs(before, after, status_callback=_sc)
+
+                # Pre-compute timing data
+                key_sizes = [256, 512, 768, 1024]
+                times_sec = []
+                for bits in key_sizes:
+                    _sc(f"Timing {bits}-bit keys for graph 2…")
+                    times_sec.append(_measure_attack_time(bits, samples=2))
+
+                trials = 5
+                vuln_times, sec_times = [], []
+                _sc("Measuring latency for graph 4…")
+                for _ in range(trials):
+                    t0 = _time.perf_counter()
+                    generate_shared_modulus_keypairs(512)
+                    vuln_times.append((_time.perf_counter() - t0) * 1000)
+                    reset_registry()
+                    t0 = _time.perf_counter()
+                    generate_secure_keypair(512)
+                    generate_secure_keypair(512)
+                    sec_times.append((_time.perf_counter() - t0) * 1000)
+                    reset_registry()
+
+                # Schedule figure rendering on main thread
+                self.after(0, lambda: _render(before, after, key_sizes,
+                                              times_sec, vuln_times, sec_times))
             except Exception as exc:
                 self._log_msg(f"\n  Graph error: {exc}\n", "red_tag")
 
-        threading.Thread(target=_worker, daemon=True).start()
+        def _render(before, after, key_sizes, times_sec, vuln_times, sec_times):
+            """Runs on main thread: create and show all figures."""
+            import matplotlib.pyplot as plt
+            import numpy as np
+            from graphs import (
+                _style_axes, BG_DARK, BG_AX, TEXT_COLOR, RED_VULN,
+                GREEN_SEC, BLUE_INFO, ORANGE_OVH, GRID_COLOR
+            )
+
+            fig = plt.figure(figsize=(14, 10))
+            fig.patch.set_facecolor(BG_DARK)
+            fig.suptitle("RSA Common Modulus Attack — Analysis Dashboard",
+                         color=TEXT_COLOR, fontsize=15, fontweight="bold", y=0.98)
+
+            # G1
+            ax1 = fig.add_subplot(2, 2, 1)
+            ax1.set_facecolor(BG_AX)
+            bars = ax1.bar(["Before Fix\n(Shared n)", "After Fix\n(Unique n)"],
+                           [before, after], color=[RED_VULN, GREEN_SEC],
+                           width=0.4, edgecolor="#ffffff22")
+            for bar, val in zip(bars, [before, after]):
+                ax1.text(bar.get_x() + bar.get_width()/2, bar.get_height()+1.5,
+                         f"{val:.1f}%", ha="center", va="bottom",
+                         color=TEXT_COLOR, fontsize=11, fontweight="bold")
+            ax1.set_ylim(0, 115)
+            ax1.axhline(90, color=RED_VULN, linestyle="--", linewidth=1, alpha=0.5)
+            ax1.axhline(2,  color=GREEN_SEC, linestyle="--", linewidth=1, alpha=0.5)
+            _style_axes(ax1, "1. Before/After Attack Success Rate", "Condition", "Success Rate (%)")
+
+            # G2
+            ax2 = fig.add_subplot(2, 2, 2)
+            ax2.set_facecolor(BG_AX)
+            ax2.plot(key_sizes, times_sec, marker="o", color=BLUE_INFO,
+                     linewidth=2.5, markersize=8, markerfacecolor=ORANGE_OVH,
+                     markeredgewidth=1.5, markeredgecolor=TEXT_COLOR)
+            for x, y in zip(key_sizes, times_sec):
+                ax2.annotate(f"{y:.3f}s", (x, y), textcoords="offset points",
+                             xytext=(6, 6), color=TEXT_COLOR, fontsize=8)
+            ax2.fill_between(key_sizes, times_sec, alpha=0.15, color=BLUE_INFO)
+            _style_axes(ax2, "2. Attack Time vs Key Size", "Key Size (bits)", "Time (seconds)")
+
+            # G3 — CIA Triad
+            ax3 = fig.add_subplot(2, 2, 3)
+            ax3.set_facecolor(BG_AX)
+            cia_b = [100 - before] * 3
+            cia_a = [100 - after]  * 3
+            cia_labels = ["Confidentiality", "Integrity", "Authentication"]
+            xi = np.arange(3)
+            w = 0.35
+            b1 = ax3.bar(xi - w/2, cia_b, w, label="Before Fix", color=RED_VULN, edgecolor="#ffffff22")
+            b2 = ax3.bar(xi + w/2, cia_a, w, label="After Fix",  color=GREEN_SEC, edgecolor="#ffffff22")
+            for bar, val in zip(list(b1)+list(b2), cia_b+cia_a):
+                ax3.text(bar.get_x()+bar.get_width()/2, bar.get_height()+1.5,
+                         f"{val:.0f}%", ha="center", va="bottom",
+                         color=TEXT_COLOR, fontsize=9, fontweight="bold")
+            ax3.set_xticks(xi)
+            ax3.set_xticklabels(cia_labels, color=TEXT_COLOR, fontsize=9)
+            ax3.set_ylim(0, 130)
+            ax3.axhline(100, color=GREEN_SEC, linestyle="--", linewidth=1, alpha=0.4)
+            ax3.legend(facecolor=BG_AX, edgecolor=GRID_COLOR, labelcolor=TEXT_COLOR, fontsize=8)
+            _style_axes(ax3, "3. CIA Triad Security Properties", "Property", "Rate (%)")
+
+            # G4
+            ax4 = fig.add_subplot(2, 2, 4)
+            ax4.set_facecolor(BG_AX)
+            trials = len(vuln_times)
+            xv = np.arange(trials)
+            wv = 0.35
+            ax4.bar(xv - wv/2, vuln_times, wv, label="Vulnerable", color=RED_VULN,  edgecolor="#ffffff22")
+            ax4.bar(xv + wv/2, sec_times,  wv, label="Secure",     color=GREEN_SEC, edgecolor="#ffffff22")
+            ax4.set_xticks(xv)
+            ax4.set_xticklabels([f"T{i+1}" for i in range(trials)], color=TEXT_COLOR)
+            ax4.axhline(sum(vuln_times)/trials, color=RED_VULN,  linestyle="--", linewidth=1.2, alpha=0.6)
+            ax4.axhline(sum(sec_times)/trials,  color=GREEN_SEC, linestyle="--", linewidth=1.2, alpha=0.6)
+            ax4.legend(facecolor=BG_AX, edgecolor=GRID_COLOR, labelcolor=TEXT_COLOR, fontsize=8)
+            _style_axes(ax4, "4. Key Generation Latency Overhead (512-bit)", "Trial", "Time (ms)")
+
+            plt.tight_layout(rect=[0, 0, 1, 0.96])
+            plt.show(block=False)
+            self._log_msg("  ✔ Graphs rendered.\n\n", "green_tag")
+
+        threading.Thread(target=_gather, daemon=True).start()
+
 
     def _on_show_proof(self):
         win = tk.Toplevel(self)
@@ -451,6 +567,57 @@ class RSAApp(tk.Tk):
         txt.pack(fill="both", expand=True)
         txt.insert("1.0", MATH_PROOF)
         txt.config(state="disabled")
+
+
+    def _on_show_comparison(self):
+        self._log_sep()
+        self._log_msg("[ COMPARISON ANALYSIS ]\n", "orange_tag")
+        self._log_msg(
+            "  Running 3 attack methods vs 3 prevention methods…\n"
+            "  This may take ~30–60 seconds for 512-bit keys.\n"
+            "  Results will open as 5 separate graph windows (G5–G9).\n\n",
+            "grey_tag"
+        )
+
+        def _gather():
+            """Compute all comparison data in background thread."""
+            try:
+                from comparison import run_attack_comparison, run_prevention_comparison
+                def _sc(msg):
+                    self._log_msg(f"  {msg}\n", "grey_tag")
+                _sc("Running attack comparison (3 methods)…")
+                atk  = run_attack_comparison(n_tests=8, bits=512)
+                _sc("Running prevention comparison (3 methods)…")
+                prev = run_prevention_comparison(n_tests=8, bits=512)
+                _sc("Rendering comparison graphs…")
+                # Hand off to main thread for all figure creation
+                self.after(0, lambda: _render(atk, prev))
+            except Exception as exc:
+                self._log_msg(f"\n  ✖ Comparison error: {exc}\n", "red_tag")
+
+        def _render(atk, prev):
+            """Create and show all 5 figures on the main thread."""
+            try:
+                import matplotlib.pyplot as plt
+                from graphs import (
+                    graph_performance_comparison,
+                    graph_security_strength,
+                    graph_efficiency_comparison,
+                    graph_resource_usage,
+                    graph_security_improvement,
+                )
+                graph_performance_comparison(atk, prev)
+                graph_security_strength()
+                graph_efficiency_comparison(prev)       # G7: trade-off of prev methods
+                graph_resource_usage(atk, prev)
+                graph_security_improvement(prev)
+
+                plt.show(block=False)
+                self._log_msg("  ✔ Comparison graphs rendered.\n\n", "green_tag")
+            except Exception as exc:
+                self._log_msg(f"\n  ✖ Render error: {exc}\n", "red_tag")
+
+        threading.Thread(target=_gather, daemon=True).start()
 
 
 def launch():
